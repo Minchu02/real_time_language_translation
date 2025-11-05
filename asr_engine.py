@@ -49,6 +49,79 @@ LANGUAGE_MAPPING = {
 INDIAN_LANGUAGES = ["hi", "kn", "ta", "te", "ml", "bn", "gu", "mr"]
 INDIAN_LANGUAGE_NAMES = ["hindi", "kannada", "tamil", "telugu", "malayalam", "bengali", "gujarati", "marathi"]
 
+# Unicode ranges for Indian language scripts
+KANNADA_RANGE = (0x0C80, 0x0CFF)
+HINDI_RANGE = (0x0900, 0x097F)
+
+def is_text_in_native_script(text: str, lang_code: str) -> bool:
+    """Check if text contains native script characters"""
+    if not text:
+        return False
+    
+    if lang_code == "kn":
+        return any(KANNADA_RANGE[0] <= ord(char) <= KANNADA_RANGE[1] for char in text)
+    elif lang_code == "hi":
+        return any(HINDI_RANGE[0] <= ord(char) <= HINDI_RANGE[1] for char in text)
+    
+    return True
+
+def is_text_transliterated(text: str, lang_code: str) -> bool:
+    """Check if text is transliterated (Roman script)"""
+    if not text or lang_code not in ["kn", "hi"]:
+        return False
+    
+    # Check if text is mostly ASCII (Roman transliteration)
+    non_ascii_chars = sum(1 for char in text if ord(char) > 127)
+    total_alphabetic = len([c for c in text if c.isalpha()])
+    
+    if total_alphabetic == 0:
+        return False
+    
+    # If less than 20% non-ASCII characters and mostly ASCII letters, likely transliterated
+    if non_ascii_chars / total_alphabetic < 0.2:
+        ascii_letters = sum(1 for c in text if c.isalpha() and ord(c) < 128)
+        if ascii_letters / total_alphabetic > 0.5:
+            return True
+    
+    return False
+
+def convert_transliterated_to_native(text: str, lang_code: str) -> str:
+    """Convert transliterated text to native script using translation"""
+    try:
+        from deep_translator import GoogleTranslator
+        
+        # If text is already in native script, return as is
+        if is_text_in_native_script(text, lang_code):
+            return text
+        
+        # Try multiple approaches:
+        # 1. Try translating from English (transliterated text often looks like English)
+        try:
+            translator_en = GoogleTranslator(source="en", target=lang_code)
+            native_text = translator_en.translate(text)
+            if is_text_in_native_script(native_text, lang_code):
+                logger.info(f"Converted transliterated text to native script (EN->{lang_code}): {text[:30]}... -> {native_text[:30]}...")
+                return native_text
+        except:
+            pass
+        
+        # 2. Try auto-detecting source language
+        try:
+            translator_auto = GoogleTranslator(source="auto", target=lang_code)
+            native_text = translator_auto.translate(text)
+            if is_text_in_native_script(native_text, lang_code):
+                logger.info(f"Converted transliterated text to native script (AUTO->{lang_code}): {text[:30]}... -> {native_text[:30]}...")
+                return native_text
+        except:
+            pass
+        
+        # If conversion failed, return original
+        logger.warning(f"Could not convert transliterated text to native script: {text[:50]}...")
+        return text
+    except Exception as e:
+        logger.warning(f"Failed to convert transliterated text: {e}")
+        return text
+
 def _load_model():
     global _model, _model_loaded
     if _model_loaded:
@@ -113,9 +186,10 @@ def detect_language(audio_bytes: bytes) -> Tuple[str, float]:
             temp_path = tmp.name
 
         # Enhanced language detection with focus on Indian languages
+        # Use task="transcribe" to detect language without translating
         segments, info = model.transcribe(
             temp_path,
-            task="translate",
+            task="transcribe",  # Use transcribe, not translate, to detect language properly
             beam_size=5,  # Increased for better accuracy
             best_of=3,    # Increased for better accuracy
             without_timestamps=True,
@@ -189,9 +263,11 @@ def transcribe_from_bytes(wav_bytes: bytes, forced_language: Optional[str] = Non
         logger.info(f"Transcribing with language: {language_to_use} (confidence: {confidence:.2f})")
 
         # Enhanced transcription with better parameters for Indian languages
+        # Use task="transcribe" explicitly to ensure native script output (not translation)
         segments, info = model.transcribe(
             temp_path,
             language=language_to_use,
+            task="transcribe",  # Explicitly use transcribe to get native script
             beam_size=5,
             best_of=3,
             temperature=0.0,
@@ -225,6 +301,19 @@ def transcribe_from_bytes(wav_bytes: bytes, forced_language: Optional[str] = Non
             words = result.split()
             if len(words) < 2:  # If very few words, might be poor transcription
                 result = "Speech detected but unclear - try speaking more clearly"
+            
+            # Check if output is transliterated and convert to native script
+            if result != "No speech detected" and result != "Speech detected but unclear - try speaking more clearly":
+                if is_text_transliterated(result, language_to_use) and not is_text_in_native_script(result, language_to_use):
+                    logger.info(f"Detected transliterated output for {language_to_use}, converting to native script...")
+                    native_result = convert_transliterated_to_native(result, language_to_use)
+                    if native_result != result and is_text_in_native_script(native_result, language_to_use):
+                        result = native_result
+                        logger.info(f"Successfully converted to native script: {result[:50]}...")
+                    else:
+                        # If direct translation failed, try translating via English meaning
+                        # This might not work perfectly for transliterated text, but worth trying
+                        logger.warning(f"Could not convert transliteration to native script, keeping original")
         
         final_language = getattr(info, 'language', language_to_use)
         logger.info(f"Final transcription ({final_language}): {result}")

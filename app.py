@@ -280,14 +280,38 @@ if st.session_state.continuous_mode:
         st.warning("⏳ Model still loading... Please wait (this can take 2-3 minutes for first load)")
     else:
         st.success("🔴 LIVE MODE ACTIVE — Speak now!")
+        st.info("""
+        **📝 How to use:**
+        1. Click the microphone button below ⬇️
+        2. **Allow microphone access** when your browser asks (important!)
+        3. Speak clearly into your microphone
+        4. Click the button again to stop recording and process
+        5. Your transcription and translation will appear above
+        """)
     
     # Audio input
-    audio_file = st.audio_input("🎤 Click to start recording → Speak → Click again to process")
+    audio_file = st.audio_input(
+        "🎤 Click here to start recording → Speak → Click again to process",
+        key="audio_recorder",
+        help="Click to start recording. Your browser will ask for microphone permission - please allow it!"
+    )
     
-    if audio_file and not st.session_state.processing:
+    if not audio_file:
+        st.info("💡 **Click the microphone button above** to start recording. When you click it, your browser will ask for microphone permission - click 'Allow' to proceed.")
+    
+    if audio_file:
         audio_bytes = get_audio_bytes(audio_file)
         
-        if audio_bytes and len(audio_bytes) > 10000:  # Minimum audio size
+        if not audio_bytes:
+            st.warning("⚠️ No audio received. Please check your microphone and try again.")
+        elif len(audio_bytes) < 10000:
+            st.warning("⚠️ Audio too short. Please record for at least 2-3 seconds.")
+            st.audio(audio_bytes, format="audio/wav")
+        elif st.session_state.processing:
+            st.info("⏳ Processing previous recording... Please wait.")
+            st.audio(audio_bytes, format="audio/wav")
+        else:
+            # Process new audio
             audio_hash = get_audio_hash(audio_bytes)
             
             if audio_hash != st.session_state.last_audio_hash:
@@ -338,13 +362,13 @@ if st.session_state.continuous_mode:
                             
                     except Exception as e:
                         st.error(f"❌ Processing error: {e}")
+                        import traceback
+                        st.error(f"Details: {traceback.format_exc()}")
                         st.session_state.transcript = f"Error: {e}"
                     finally:
                         st.session_state.processing = False
-                        time.sleep(0.5)  # Reduced delay for better responsiveness
+                        time.sleep(0.5)
                         st.rerun()
-        else:
-            st.warning("⚠️ Audio too short or empty. Please record for 2-3 seconds.")
 
     # Live metrics
     col_metric1, col_metric2, col_metric3, col_metric4 = st.columns(4)
